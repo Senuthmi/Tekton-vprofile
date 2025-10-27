@@ -1,0 +1,39 @@
+iapiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  generateName: vprofile-run-
+spec:
+  pipelineRef:
+    name: vprofile-ci-pipeline
+  podTemplate:
+    dnsPolicy: ClusterFirst
+  params:
+    - name: repo-url
+      value: https://github.com/Senuthmi/my-vprofile-project
+    - name: git-revision
+      value: main
+    - name: image-registry
+      value: docker.io/thimansa
+    - name: image-tag
+      value: "$(context.pipelineRun.name)"
+    - name: argocd-password
+      value: jILDCSedEljdoAPr
+    - name: argocd-app-name
+      value: vprofile
+    - name: git-username
+      value: Senuthmi
+    - name: git-email
+      value: tsenuthmi2007@gmail.com
+    - name: git-branch
+      value: main
+    - name: argocd-server
+      value: argocd-server.argocd.svc.cluster.local
+    - name: gitToken
+      value: {to be filled}
+
+  workspaces:
+    - name: shared-workspace
+      persistentVolumeClaim:
+        claimName: shared-workspace-pvc
+
+
