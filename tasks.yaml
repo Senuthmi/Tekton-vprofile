@@ -1,0 +1,254 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clone-repo
+spec:
+  params:
+    - name: url
+      type: string
+    - name: revision
+      type: string
+      default: main
+  workspaces:
+    - name: source
+      description: Workspace to clone the repo into
+  steps:
+    - name: clone-repo
+      image: thimansa/my-ubuntu-tekton:latest
+      script: |
+        #!/bin/sh
+        set -e
+
+        echo "Cleaning up /workspace/source/repo..."
+        rm -rf "$(workspaces.source.path)/repo"
+
+        echo "Cloning repository..."
+        git clone "$(params.url)" "$(workspaces.source.path)/repo"
+
+        cd "$(workspaces.source.path)/repo"
+
+        echo "Checking out revision: $(params.revision)"
+        git checkout "$(params.revision)"
+
+        echo "Repository cloned successfully"
+        pwd
+        ls -lR .
+
+
+
+
+
+---
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: show-clone
+spec:
+  workspaces:
+    - name: source
+      description: Workspace to show files from
+  steps:
+    - name: show
+      image: thimansa/my-ubuntu-tekton:latest
+      script: |
+        echo "=== Files in workspace after clone ==="
+        ls -lR $(workspaces.source.path)
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: docker-build-push-app
+spec:
+  params:
+    - name: image
+      type: string
+      description: Image name with tag
+    - name: contextDir
+      type: string
+      default: /workspace/source/repo
+    - name: dockerfile
+      type: string
+      default: Docker-files/app/Dockerfile
+  workspaces:
+    - name: source
+      description: Cloned source code
+  steps:
+    - name: maven-build
+      image: maven:3.9.6-eclipse-temurin-21
+      workingDir: $(params.contextDir)
+      script: |
+        mvn clean package
+
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:latest
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+      args:
+        - --dockerfile=$(params.dockerfile)
+        - --context=$(params.contextDir)
+        - --destination=$(params.image)
+        - --cache=true
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: dockerhub-secret
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: docker-build-push-web
+spec:
+  params:
+    - name: image
+      type: string
+      description: Image name with tag
+    - name: contextDir
+      type: string
+      default: /workspace/source/repo/Docker-files/web
+    - name: dockerfile
+      type: string
+      default: Docker-files/web/Dockerfile
+  workspaces:
+    - name: source
+      description: Cloned source code
+  steps:
+    - name: list-files
+      image: thimansa/my-ubuntu-tekton:latest
+      script: |
+        ls -lR /workspace/source
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:latest
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+      args:
+        - --dockerfile=/workspace/source/repo/$(params.dockerfile)
+        - --context=$(params.contextDir)
+        - --destination=$(params.image)
+        - --cache=true
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: dockerhub-secret
+
+---
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: docker-build-push-db
+spec:
+  params:
+    - name: image
+      type: string
+      description: Image name with tag
+    - name: contextDir
+      type: string
+      default:  /workspace/source/repo/Docker-files/db
+    - name: dockerfile
+      type: string
+      default: Docker-files/db/Dockerfile
+  workspaces:
+    - name: source
+      description: Cloned source code
+  steps:
+    - name: list-files
+      image: thimansa/my-ubuntu-tekton:latest
+      script: |
+        ls -lR /workspace/source
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:latest
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+      args:
+        - --dockerfile=/workspace/source/repo/$(params.dockerfile)
+        - --context=$(params.contextDir)
+        - --destination=$(params.image)
+        - --cache=true
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: dockerhub-secret
+---
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: update-helm-values-and-commit
+spec:
+  params:
+    - name: image-tag
+      type: string
+    - name: gitUsername
+      type: string
+    - name: gitEmail
+      type: string
+    - name: gitBranch
+      type: string
+      default: main
+    - name: gitToken
+      type: string
+  workspaces:
+    - name: source
+      description: The cloned Git repository
+  steps:
+    - name: update-values
+      image: alpine:latest
+      script: |
+        apk add --no-cache git sed
+
+        cd $(workspaces.source.path)/repo/helm/vprofile-chart
+
+        echo "Updating values.yaml with new image tag: $(params.image-tag)"
+        sed -i "s/tag: .*/tag: $(params.image-tag)/" values.yaml
+
+    - name: git-commit-push
+      image: alpine:latest
+      script: |
+        apk add --no-cache git
+
+        cd $(workspaces.source.path)/repo/helm/vprofile-chart
+
+        git config --global user.email "$(params.gitEmail)"
+        git config --global user.name "$(params.gitUsername)"
+
+        git remote set-url origin https://$(params.gitToken)@github.com/Senuthmi/my-vprofile-project.git
+
+
+        git add .
+        git commit -m "Update image tags to $(params.image-tag)" || echo "No changes to commit"
+        git push origin "$(params.gitBranch)"
+
+---
+
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-argocd
+spec:
+  params:
+    - name: argocdServer
+      type: string
+      default: argocd-server.argocd.svc.cluster.local
+    - name: appName
+      type: string
+    - name: argocdPassword
+      type: string
+
+  steps:
+    - name: argocd-sync
+      image: argoproj/argocd:v2.6.15
+      script: |
+        #!/bin/sh
+        argocd login $(params.argocdServer) --username admin --password $(params.argocdPassword) --insecure
+        argocd app sync $(params.appName)
+        argocd app wait $(params.appName) --health --operation
+
+
+
