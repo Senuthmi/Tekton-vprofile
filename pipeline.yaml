@@ -1,0 +1,108 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: vprofile-ci-pipeline
+spec:
+  params:
+    - name: repo-url
+    - name: git-revision
+      default: main
+    - name: image-registry
+    - name: image-tag
+    - name: dockerfile-path 
+      default: Dockerfile
+    - name: git-username
+    - name: git-email
+    - name: git-branch
+    - name: argocd-app-name
+    - name: argocd-server
+    - name: argocd-password
+    - name: gitToken
+
+  workspaces:
+    - name: shared-workspace
+  tasks:
+    - name: clone-repo
+      taskRef:
+        name: clone-repo
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.git-revision)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: show-clone
+      runAfter: [clone-repo]
+      taskRef:
+        name: show-clone
+      workspaces:
+        - name: source
+          workspace: shared-workspace      
+
+    - name: vprofileweb
+      runAfter: [clone-repo]
+      taskRef:
+        name: docker-build-push-web
+      params:
+        - name: image
+          value: $(params.image-registry)/vprofileweb:$(params.image-tag)       
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: vprofileapp
+      runAfter: [clone-repo]
+      taskRef:
+        name: docker-build-push-app
+      params:
+        - name: image
+          value: $(params.image-registry)/vprofileapp:$(params.image-tag)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: vprofiledb
+      runAfter: [clone-repo]
+      taskRef:
+        name: docker-build-push-db
+      params:
+        - name: image
+          value: $(params.image-registry)/vprofiledb:$(params.image-tag)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+
+    - name: update-helm-values
+      runAfter: [vprofileweb, vprofileapp, vprofiledb]
+      taskRef:
+        name: update-helm-values-and-commit
+      params:
+        - name: image-tag
+          value: $(params.image-tag)
+        - name: gitUsername
+          value: $(params.git-username)
+        - name: gitEmail
+          value: $(params.git-email)
+        - name: gitBranch
+          value: $(params.git-branch)
+        - name: gitToken
+          value: $(params.gitToken)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: deploy-argocd
+      runAfter: [update-helm-values]
+      taskRef:
+        name: deploy-argocd
+      params:
+        - name: appName
+          value: $(params.argocd-app-name)
+        - name: argocdServer
+          value: $(params.argocd-server)
+        - name: argocdPassword
+          value: $(params.argocd-password)
